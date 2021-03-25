@@ -1,0 +1,486 @@
+---
+title: "DSC 520 Final Project"
+author: "Rebecca Lewis"
+date: "March 1, 2019"
+fig_width: 6 
+fig_height: 4 
+output: 
+    word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=6, fig.height=4)
+```
+
+```{r echo=FALSE, message = FALSE, warning=FALSE, results='hide'}
+#load packages and data
+library(readr)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(broom)
+
+combined <- read.csv("aac_intakes_outcomes.csv", header = TRUE)
+
+#create dataset with variables related to project
+ProjectData <- combined[, c("outcome_type", "outcome_subtype", "outcome_datetime", "animal_type","dob_monthyear", "breed", "intake_condition", "intake_type", "intake_datetime", "sex_upon_intake","time_in_shelter_days")]
+
+#add another variable that groups the outcome types to either Live Release or Euthanasia
+#find the indexes of each category
+liverelease_index <- as.character(ProjectData$outcome_type) %in% c("Adoption", "Return to Owner", "Rto-Adopt", "Transfer", "Relocate")
+euthanasia_index <- as.character(ProjectData$outcome_type) == "Euthanasia"
+
+#create a vector of the categories
+outcome_category <- ifelse(liverelease_index, "Live Release", ifelse(euthanasia_index, "Euthanasia", NA))
+
+#add the categories to the project data
+ProjectData <- cbind(ProjectData, outcome_category)
+
+
+##Clean up Dates
+#DOB: modify year by adding day 1 and converting to date type
+ProjectData$dob_monthyear <-as.character(ProjectData$dob_monthyear)
+ProjectData$dob_monthyear <-paste(ProjectData$dob_monthyear, 1)
+ProjectData$dob_monthyear <- str_replace(ProjectData$dob_monthyear," ", "-")
+
+ProjectData$dob_monthyear <-ymd(ProjectData$dob_monthyear)
+
+#Outcome Date
+ProjectData$outcome_datetime <-as.character(ProjectData$outcome_datetime)
+ProjectData$outcome_datetime <- ymd_hms(ProjectData$outcome_datetime)
+
+#Intake Date
+ProjectData$intake_datetime <-as.character(ProjectData$intake_datetime)
+ProjectData$intake_datetime <- ymd_hms(ProjectData$intake_datetime)
+
+
+#change null sex upon intake values to unknown
+ProjectData$sex_upon_intake <- as.character((ProjectData$sex_upon_intake))
+ProjectData$sex_upon_intake <- ifelse(ProjectData$sex_upon_intake == "", "Unknown", ProjectData$sex_upon_intake)
+ProjectData$sex_upon_intake <- as.factor(ProjectData$sex_upon_intake )
+
+#set baseline level for intake condition
+print(levels(ProjectData$intake_condition))
+ProjectData$intake_condition = relevel(ProjectData$intake_condition, ref = 4)
+
+
+#set baseline level for gender
+print(levels(ProjectData$sex_upon_intake))
+ProjectData$sex_upon_intake = relevel(ProjectData$sex_upon_intake, ref = 5)
+
+#set baseline level for intake type
+print(levels(ProjectData$intake_type))
+ProjectData$intake_type = relevel(ProjectData$intake_type, ref = 3)
+
+#convert Rto-adopt to Return to Owner
+ProjectData$outcome_type <- as.character(ProjectData$outcome_type)
+ProjectData$outcome_type <- str_replace(ProjectData$outcome_type, "Rto-Adopt", "Return to Owner")
+ProjectData$outcome_type <- as.factor(ProjectData$outcome_type)
+
+#Final Cleaning
+#Filter 
+any(is.na(ProjectData$outcome_category))
+
+#filter out null outcome categories (neither live release nor euthanasia)
+Clean_ProjectData <- ProjectData %>% 
+    filter(is.na(ProjectData$outcome_category) == FALSE) 
+
+#filter out animals other than cats and dogs
+Clean_ProjectData <- Clean_ProjectData %>%
+    filter(as.character(Clean_ProjectData$animal_type) %in% c("Cat", "Dog"))
+
+#filter out intake types that are not applicable: remove wildlife and euthanasia request
+Clean_ProjectData <- Clean_ProjectData %>%
+    filter(as.character(Clean_ProjectData$intake_type) %in% c("Public Assist", "Owner Surrender", "Stray"))
+
+#age at intake
+Clean_ProjectData$age_intake_days <- difftime(Clean_ProjectData$intake_datetime,Clean_ProjectData$dob_monthyear,units="days")
+
+#age at outcome
+Clean_ProjectData$age_outcome_days <- difftime(Clean_ProjectData$outcome_datetime,Clean_ProjectData$dob_monthyear,units="days")
+
+```
+
+#Problem Statement
+The animal welfare community is divided by the “no-kill” movement.  Despite the good intentions of the advocates to transition shelters to a goal of zero animals euthanzied, they have actually created a negative public perceptions of excellent open admission shelters simply trying to keep up with the flow of animals entering their doors. The fact in many communities is that the rate at which animals are entering shelters is far greater than the rate at which they are being placed into homes.  To simply stop the euthanasia of animals in shelters causes further problems of overcrowding, illness and poor quality of life for the animals.  So how do you move towards a “no-kill” or low euthanasia rate facility while keeping the health and safety of the animal in mind?
+
+By analyzing the relationships between characteristics pertaining to animals in a shelter to their outcome in a facility with an already low euthanasia rate, I hope to find insights that can lead to forther investigation into their programs and services with the hope of ultimately reducing euthanasia in areas where overpopulation is high.  Some questions that can lead to this goal are:
+
+* Do cats or dogs have a higher likelihood of live release/euthanasia?
+* Do older animals have a higher or lower likelihood of live release/euthanasia?
+* For dogs, does breed play a role in a shelter dog's outcome?
+* Does the condition of the animal upon intake affect the outcome?
+* Does the intake type affect the outcome?
+* Does the gender of the animal affect the outcome?
+* As the length of the animals stay in the shelter increases, does the chance of live release decrease?  Does the chance of euthanasia increase?
+
+It is also important to note that shelters who are classified as "no-kill" must have a euthanasia rate of less than 10% of their population.  So while the data being used is from a "no-kill", there are still cases of animals being euthanized.
+
+#Data and Methodology
+##Data
+To explore these questions, datasets provided by Austin Animal Center Shelter Intakes and Outcomes was retrieved January 7, 2019 from [Kaggle](https://www.kaggle.com/aaronschlegel/austin-animal-center-shelter-intakes-and-outcomes).  This data is made public as part of city of Austin’s Open Data Initiative.  The data started being collected in 2013 and is available in the file through March of 2018.  Both the outcome and intake datasets have approximately 80,000 observations of 12 variables.  The combined dataset joins these sets of data as well as provides aggregate information that can be useful in analysis. 
+
+Variables of interest in this dataset include:
+
+* Animal Type - cats and dogs are the only animal types used in this analysis
+* Age - the age at intake and outcome were calculated using the date of birth and the respective dates.  Approximately 20,000 observations contained calculated ages that were less than 0 which does not make sense.  Rather than eliminating the data, I opted to not use age in the analysis.
+* Outcome Type - the outcome type variables were grouped into larger the larger categories of "Live Release" and "Euthanasia."  The types included in live release were Adoption, Transfer, Return to Owner and RTO-Adopt.  Euthanasia was the only outcome included in the Euthanasia category.
+* Breed - while breed is available for cats and dogs, the data is more meaningful for dogs as there is a larger variety found in shelters with widely different characteristics that can affect adoptability, like size, temperment, and activity level
+* Condition - the condition refers to whether the animal is healthy or sick at the time of intake.  There are other categories such as pregnant and nursing that doesn't quite fall into the sick category but can affect outcome.
+* Intake Type - Intake types applicable for this analysis include Stray, Owner Surrender, and Public Assist.  Euthanasia request and wildlife were excluded because they could skew the results negatively.  An intake type of euthanasia request means the owner is bringing the animal in to be euthanized. Some regions mandate that captured wildlife that enter the shelter must be euthanized.
+* Length of stay - Time in shelter is calculated already in the aggregated data and is represented in days.
+* Gender - in an animal shelter, the gender of an animal can be defined by whether the animal is spayed or neutered in addition to the traditional genders of male and female.
+
+##Methodology
+My approach to uncovering the influence of these variables on the chance of live release involved casting a wide net and looking at all of the variables together with a logistic regression model and then drilling down further on the most impactful variables.  Logistic regression was used because the response variable is binary, and there can be no value between live release and euthanasia.
+
+As stated above, while the age of an animal was of interest, further work with the data revealed many observations contained a birth date that was greater than the intake date.  Meaning, the animal was not born when it entered the shelter.  Because birth date is a very subjective assessment by the staff taking in the animal, I'm assuming the error is isolated to the birth date. So while I don't want to include the age variable in the models, I do still want to include the data for the other variables in the analysis.
+
+A logistic regression was performed on the data for cats and dogs together, and then on cats and dogs individually to see if further specifying the data would improve the model. Even though cats and dogs are the primary domestic breeds found in animal shelters, they each face their own challenges when it comes to euthanasia and live release.  Additionally, there is sometimes a well defined line between cat people and dog people, i.e. potential cat adopters and potential dog adopters.  I hypothesize that the factors that affect the chance of live release impact the fate of cats and dogs differently.
+
+A more detailed review of data was performed on each of the variables that demonstrated the most impact.
+
+#Results
+##Model for All Animals
+A logistic regression model was created for the outcome category of Live Release based on the animal type of cat/dog, condition at intake, time in shelter in days, and gender.  Viewing the summary of the model reveals the data most likely to affect the outcome:
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+Austin_Model <- glm(outcome_category ~ animal_type + intake_condition + intake_type + time_in_shelter_days + sex_upon_intake, data = Clean_ProjectData, family = binomial())
+summary(Austin_Model)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+modelChi <- Austin_Model$null.deviance - Austin_Model$deviance
+chidf <- Austin_Model$df.null - Austin_Model$df.residual
+chisq.prob <- 1 - pchisq(modelChi, chidf)
+```
+
+The deviance of the logistic regression model indicate that this model is a better predictor of live release than the null hypothesis because the residual deviance is `r round(modelChi, 2)` less than the null deviance with 15 degrees of freedom.  Additionally, the chi squared probability is 0 which indicates a significant improvement in the fit of the model over the null hypothesis.
+
+###Accuracy of the Model for All Animals
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+Clean_ProjectData_Mod <- Clean_ProjectData
+Clean_ProjectData_Mod$predicted.probabilities <- fitted(Austin_Model)
+Clean_ProjectData_Mod$standardized.residuals <- rstandard(Austin_Model)
+Clean_ProjectData_Mod$studentized.residuals <- rstudent(Austin_Model)
+Clean_ProjectData_Mod$dfbeta <- dfbeta(Austin_Model)
+Clean_ProjectData$dffit <- dffits(Austin_Model)
+Clean_ProjectData_Mod$leverage <- hatvalues(Austin_Model)
+
+Clean_ProjectData_Mod$pred_Live <- ifelse(Clean_ProjectData_Mod$predicted.probabilities > .50, "T", "F")
+Clean_ProjectData_Mod$actual_Live <- ifelse(as.character(Clean_ProjectData_Mod$outcome_category) == "Live Release", "T", "F")
+
+Clean_ProjectData_Mod$accuracy <- Clean_ProjectData_Mod$actual_Live == Clean_ProjectData_Mod$pred_Live
+
+accuracy <- sum(Clean_ProjectData_Mod$accuracy) / nrow(Clean_ProjectData_Mod) * 100
+```
+
+The estimated accuracy of this model using the full dataset and checking against the actual results yields an accuracy rate of `r round(accuracy, 2)`%.
+
+###Insights for All Animals
+Based on the coefficients in the model summary, the following variables are the most significant predictors associated with live release:
+
+* Animal Type - The beta value of the Dog animal type indicates a slightly positive impact on live release with a z value of 9.086 (which is far from 0) and a p-value less than .05 indicating a significant effect.  Because the baseline value is cat, this means that dogs have a more likely chance of live release than cats.
+* Condition - Out of all of the conditions provided, animals that were coded as aged, sick or injured were less likely to meet an outcome that is qualified as live release as compared to the baseline classification of normal. The relationship to live release is negative as evidenced based on the sign of the *beta* value and they can be considered significant based on their p-values being less than .001.  Pregnancy had a larger beta value however the p value was significantly higher than .05 at .935 and the z value is close to 0 which indicates it does not have a significant impact on live release.  Nursing animals had a slightly positive beta value and a p-value equal to .01.  Based on my experience in an animal shelter, I assume this is because when nursing animals come in with their mothers, they are all often placed with a foster care family until the kittens are large enough to be made available for adoption.  Other also had a negative beta value with a significant p-value less than .001 but we don't know much about what is classified as other to make any conclusions.
+* Intake Type - For intake type, I chose Public Assist as the baseline because I believed both the owner surrender and stray classifications had an impact on the live release rate of the animal.  Based on the beta values, the Owner Surrender type does not seem to be a significant indicator of live release however strays have a higher chance of being released form the shelter alive than the baseline of public assist.  Typically, strays are brought in to a shelter when found roaming by animal control officers.  I anticipated this to have a negative impact on the live release rate so this was surprising.
+* Time In Shelter - My assumption for this variable was that it would have a negative effect on the chances of live release.  Based on the beta value, it is very close to zero which to me indicates it is somewhat neutral.  However the z value is far from 0 and the p-value of less than .05 indicates it is a significant predictor of live release.  The reason for this not having much of an impact at this facility could be because they are considered no kill. A high volume open admission municipal shelter may have a very different beta than this example. This may not be a good variable to use in the model if we are trying to test data from a high admission shelter.
+* Gender - The beta values of gender tell me that knowing the gender of the animal, and whether or not it was intact, increases the chances of live release over the baseline of Unknown.  I would like to look into this further, grouping by male vs. female to get more information about traditional gender classifications.  I find it very interesting that spayed females relationship was not as strong as the other categories, as indicated by the beta values.
+
+##Model for Cats
+```{r warning=FALSE, echo=FALSE, message=FALSE}
+Cat_Data <- Clean_ProjectData[ , 1:14] %>%
+        filter(animal_type == "Cat")
+
+Cat_Model <- glm(outcome_category ~ intake_condition + intake_type + time_in_shelter_days + sex_upon_intake, data = Cat_Data, family = binomial())
+
+summary(Cat_Model)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cat_modelChi <- Cat_Model$null.deviance - Cat_Model$deviance
+cat_chidf <- Cat_Model$df.null - Cat_Model$df.residual
+cat_chisq.prob <- 1 - pchisq(cat_modelChi, cat_chidf)
+```
+
+Both the null and residual deviances of the model with cats only is significantly lower by half of the deviances for the model including cats and dogs.  In general, this is an indication that this model is much better.  In addition, the difference between the null and residual deviance is `r round(cat_modelChi, 2)` less which is lower than the value for all animals.  Additionally, the chi squared probability is `r round(cat_chisq.prob, 2)` which indicates a significant improvement in the fit of the model over the null hypothesis.
+
+###Accuracy of the Cat Model
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Cat_Data_Mod <- Cat_Data
+Cat_Data_Mod$predicted.probabilities <- fitted(Cat_Model)
+Cat_Data_Mod$standardized.residuals <- rstandard(Cat_Model)
+Cat_Data_Mod$studentized.residuals <- rstudent(Cat_Model)
+Cat_Data_Mod$dfbeta <- dfbeta(Cat_Model)
+Cat_Data_Mod$dffit <- dffits(Cat_Model)
+Cat_Data_Mod$leverage <- hatvalues(Cat_Model)
+
+Cat_Data_Mod$pred_Live <- ifelse(Cat_Data_Mod$predicted.probabilities > .50, "T", "F")
+Cat_Data_Mod$actual_Live <- ifelse(as.character(Cat_Data_Mod$outcome_category) == "Live Release", "T", "F")
+
+Cat_Data_Mod$accuracy <- Cat_Data_Mod$actual_Live == Cat_Data_Mod$pred_Live
+
+cat_accuracy <- sum(Cat_Data_Mod$accuracy) / nrow(Cat_Data_Mod) * 100
+
+```
+The estimated accuracy of this model using only data for cats and checking against the actual results yeilds an accuracy rate of `r round(cat_accuracy, 2)`%.  The full model containing data for cats and dogs yields more accurate results than just for cats; however, because of the much lower deviance values I would use the specific model for cats.
+
+##Model for Dogs
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+Dog_Data <- Clean_ProjectData %>%
+    filter(animal_type == "Dog")
+
+Dog_Model <- glm(outcome_category ~ intake_condition + intake_type + time_in_shelter_days + sex_upon_intake, data = Dog_Data, family = binomial())
+
+summary(Dog_Model)
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+dog_modelChi <- Dog_Model$null.deviance - Dog_Model$deviance
+dog_chidf <- Dog_Model$df.null - Dog_Model$df.residual
+dog_chisq.prob <- 1 - pchisq(cat_modelChi, cat_chidf)
+```
+
+Just as we saw with the specific model for cats, both the null and residual deviances of the model with dogs only is even lower deviances for the model including cats and dogs.  The model for dogs only is an even better model than the one for cats because the difference between the null and residual deviance is `r round(dog_modelChi, 2)` less which is lower than the value for all animals and for cats.  Additionally, the chi squared probability is `r round(dog_chisq.prob, 2)` which indicates a significant improvement in the fit of the model over the null hypothesis.
+
+###Accuracy of the Dog Model
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Dog_Data_Mod <- Dog_Data
+Dog_Data_Mod$predicted.probabilities <- fitted(Dog_Model)
+Dog_Data_Mod$standardized.residuals <- rstandard(Dog_Model)
+Dog_Data_Mod$studentized.residuals <- rstudent(Dog_Model)
+Dog_Data_Mod$dfbeta <- dfbeta(Dog_Model)
+Dog_Data_Mod$dffit <- dffits(Dog_Model)
+Dog_Data_Mod$leverage <- hatvalues(Dog_Model)
+
+
+Dog_Data_Mod$pred_Live <- ifelse(Dog_Data_Mod$predicted.probabilities > .50, "T", "F")
+Dog_Data_Mod$actual_Live <- ifelse(as.character(Dog_Data_Mod$outcome_category) == "Live Release", "T", "F")
+
+Dog_Data_Mod$accuracy <- Dog_Data_Mod$actual_Live == Dog_Data_Mod$pred_Live
+
+dog_accuracy <- sum(Dog_Data_Mod$accuracy) / nrow(Dog_Data_Mod) * 100
+```
+The estimated accuracy of this model using only data for dogs and checking against the actual results yields an accuracy rate of `r round(dog_accuracy, 2)`% which is an improvement over the model for all animals.  
+
+
+###Insights from Separate Cat and Dog Models
+Some important insights regarding the variables for cats vs. dogs are:
+
+* Intake Condition:  While cats classified as aged, injured and sick all have negative relationships as evidenced by the beta values in the summaries for both all animals and cats only, we can see that the degree of those relationships is much greater in the cats only model as demonstrated by larger  value for those numbers.  This means that even though the intake condition of sick, injured and aged has a negative influence on the chance of live release for both cats and dogs, it has a greater influence on cats than for dogs.
+* Intake Type: The relationship between the intake type of stray for cats is  negative as compared to the baseline value of Public Assist.  The meaning to shelters is that cats who come in to the shelter as strays have a lower chance of live release than those that come in as public assist.   For dogs, the relationship between the intake type of stray is positive and owner surrender is negative as compared to the baseline value of public assist.  This result is the opposite of what I expect to happen.  Typically, owner surrenders are already acclimated to a home environment and more information is known about their behavior where as a stray dog's history is unknown.  Although, a owned dog may have a harder time adjusting to the shelter environment which can lead to a decline in health or temperament.   
+* Time in Shelter: The time in the shelter for both dogs and cats is a slightly positive relationship; however, for cats it holds more significances as evidenced by a p-value < .001 where for dogs, the p-value < .01. This is contrary to what I thought would happen.  Cats are more frequently euthanized in shelters in general and specifically older cats are hard to place.  I would want to do more exploration into the programs that Austin Animal Center Shelter employs to place longtime cat residents to see how this can be applied to other organizations.
+* Gender: Knowing the gender of the animal upon intake has a positive impact on the chance of live release for both cats and dogs.  For cats, it appears to be significant for all of the genders, with p-values < .001. For dogs, knowing the dog is a spayed female has a greater impact than knowing the other genders.  This is also an interesting detail, and based on domain expertise I can understand this for a few reasons:
+    + Spayed Female dogs are more preferable over intact because they cannot reproduce.  Although most shelters spay the animals before they are adopted.
+    + Male dogs in general "mark" their territory.  Depending on how old they were at the type of the surgery, this habit may persist.  Many potential adopters could be deterred by a male animal because of this. 
+
+#Additional Analysis
+##Dogs by Breed
+One of my questions was to determine whether some breeds were more likely than others to be euthanized.  I wanted to visualize these numbers so I summarized the number of animals euthanized and released based on the breed of the animal.
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+Dog_by_breed <- Dog_Data %>%
+    group_by(breed = as.character(breed)) %>%
+    summarise(count = n()) %>%
+    arrange(desc(count))
+
+top_10_breeds <- Dog_by_breed[1:10, 1]
+
+
+Top_10_Breed_Data <- Dog_Data %>%
+    filter(breed %in% pull(top_10_breeds)) %>%
+    count(breed, outcome_category) 
+
+```
+
+Pretty quickly, I realized there were far too many recorded breeds in the dataset to view all of them.  So I made the decision to focus on the top 10 breeds reported, which are:
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+    kable(head(Dog_by_breed, 10))
+```
+
+The bar chart below summarizes the number of dogs euthanized and released alive for the top 10 occuring breeds in the dataset:
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, out.width="100%"}
+ggplot(Top_10_Breed_Data, aes(x=breed, y=n, fill=breed)) + geom_bar(stat="identity") + 
+    facet_wrap(~ outcome_category) +
+    labs(title = "Outcome by Breed", y = "Count") + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+```
+
+Plotting these outcome categories together is important because the scale of the y axis when plotting individually can be misleading.  However, it is difficult to see the values for euthanasia so below is the euthanasia only bar plot
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.width=6, fig.height=4}
+Dog_Euth_Data <- Dog_Data %>%
+    filter(outcome_category =="Euthanasia" & breed %in% pull(top_10_breeds)) %>%
+    arrange(breed)
+    
+ggplot(data = Dog_Euth_Data, aes(breed)) + geom_bar(aes(fill=breed)) + 
+    labs(title = "Euthanasia by Breed") + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+```
+
+Of course, because pit bull mixes are the highest occurring breeds in the Austin Animal Center Shelter, they are also have the highest live release and euthanasia totals.  Based on the outcome percentabe by breed, dogs that are classified as Dachshund and Mineature Poodle mixes have highest live release rate and lowest euthanasia rate.  It also tells us that Pit Bull mixes have the lowest live release rate and the highest euthanasia rate.
+
+```{r warning=FALSE, message = FALSE, echo=FALSE}
+Top_10_Wide <- spread(Top_10_Breed_Data, outcome_category, n)
+
+Top_10_Wide$Percent_Live <- Top_10_Wide$`Live Release` / (Top_10_Wide$Euthanasia + Top_10_Wide$`Live Release`) * 100
+Top_10_Wide$Percent_Euth <- Top_10_Wide$Euthanasia / (Top_10_Wide$Euthanasia + Top_10_Wide$`Live Release`) * 100
+
+kable(Top_10_Wide[ ,c("breed", "Percent_Live", "Percent_Euth")], digits = 2)
+```
+
+Despite pit bull mixes having the lowest live release rate, a 93% live release rate is considered excellent.  
+
+In addition to looking closer at the outcome by breed, I also reviewed the outcome type for the breeds with the highest and lowest live release rates in an effort to identify any differences.
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+HiLow_Breed_Data <- Dog_Data %>%
+    filter(breed %in% c("Dachshund Mix", "Miniature Poodle Mix", "Pit Bull Mix") & outcome_type != "Euthanasia") %>%
+    count(breed, outcome_type) 
+
+
+ggplot(HiLow_Breed_Data, aes(x=outcome_type, y=n, fill=outcome_type)) + geom_bar(stat="identity") + 
+    facet_wrap(~ breed) +
+    labs(title = "Live Release Method by Breed", y = "Count") + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+```
+
+Again, because the quantity of pit bull mixes entering the shelter is much larger than the other quantities, it is hard to get an idea if any of the types are more sucessful for one breed vs the other.
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+HiLo_Wide <- spread(HiLow_Breed_Data, outcome_type, n)
+
+HiLo_Wide$Percent_Adopt <- HiLo_Wide$Adoption / (HiLo_Wide$Adoption + HiLo_Wide$`Return to Owner` 
+                                                 + HiLo_Wide$Transfer )* 100
+HiLo_Wide$Percent_RTO <- (HiLo_Wide$`Return to Owner`) / (HiLo_Wide$Adoption + HiLo_Wide$`Return to Owner`  + HiLo_Wide$Transfer )* 100
+HiLo_Wide$Percent_TXR <- HiLo_Wide$Transfer / (HiLo_Wide$Adoption + HiLo_Wide$`Return to Owner` + HiLo_Wide$Transfer )* 100
+
+kable(HiLo_Wide[ ,c("breed", "Percent_Adopt", "Percent_RTO", "Percent_TXR")], digits = 2)
+```
+
+By looking at the percentages of dogs adopted, returned to owner, and transferred, we can gather more information.  Because the percentage of the breeds adopted, returned to owner and transferred are very similar between the breeds,  I don't see an indication that would suggest that the dachshunds or miniature poodle mixes have a better chance at exiting using one of the particular methods.  In fact, pit bull mixes seem to get returned to their owner more often than the dachshunds or miniature poodles.
+
+##Condition at Intake 
+Another interesting factor I wanted to explore and also presented as an significant indication of outcome was the condition at intake.  Our baseline was normal and the conditions that seemed to have the most impact was Aged, Sick, and Injured. 
+
+Bar charts below show the distribution between these conditions for each outcome for cats and dogs separately.  In addition, tables showing the percent of those animals for each outcome are displayed.
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Cat_by_Cond <- Clean_ProjectData %>%
+    filter(as.character(intake_condition) %in% c("Aged", "Injured", "Sick") & as.character(animal_type) == "Cat") %>%
+    count(intake_condition, outcome_category)
+
+ggplot(Cat_by_Cond, aes(x=intake_condition, y=n, fill=intake_condition)) + geom_bar(stat="identity") + 
+    facet_wrap(~ outcome_category) +
+    labs(title = "Cat Outcome by Intake Condition", y = "Count") + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Cat_Wide <- spread(Cat_by_Cond, outcome_category, n)
+
+Cat_Wide$Percent_Live<- (Cat_Wide$`Live Release`) / (Cat_Wide$`Live Release` + Cat_Wide$Euthanasia )* 100
+Cat_Wide$Percent_Euth <- Cat_Wide$Euthanasia / (Cat_Wide$`Live Release` + Cat_Wide$Euthanasia )* 100
+
+kable(Cat_Wide[ ,c("intake_condition", "Percent_Live", "Percent_Euth")], digits = 2)
+```
+
+Despite the difference in the percentage values for both cats and dogs outcomes, we can see similarities in that a higher percentage of animals classified as aged during intake had a favorable outcome of live release.  I would be interested to see their programs for older animals as this is not common in many shelters.  Both cats and dogs labeled as injured had the lowest percentage of live release. This does make sense as sicknesses can typically cost less to cure before adoption and are minimally invasive.  Where as injuries can involve surgery and longer recovery time.    
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+Dog_by_Cond <- Clean_ProjectData %>%
+    filter(as.character(intake_condition) %in% c("Aged", "Injured", "Sick") & as.character(animal_type) == "Dog") %>%
+    count(intake_condition, outcome_category)
+
+ggplot(Dog_by_Cond, aes(x=intake_condition, y=n, fill=intake_condition)) + geom_bar(stat="identity") + 
+    facet_wrap(~ outcome_category) +
+    labs(title = "Dog Outcome by Intake Condition", y = "Count") + 
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+Dog_Wide <- spread(Dog_by_Cond, outcome_category, n)
+
+Dog_Wide$Percent_Live<- (Dog_Wide$`Live Release`) / (Dog_Wide$`Live Release` + Dog_Wide$Euthanasia )* 100
+Dog_Wide$Percent_Euth <- Dog_Wide$Euthanasia / (Dog_Wide$`Live Release` + Dog_Wide$Euthanasia )* 100
+
+kable(Dog_Wide[ ,c("intake_condition", "Percent_Live", "Percent_Euth")], digits = 2)
+
+```
+
+##Gender Categories
+As mentioned earlier, I wanted to explore the effect that gender had on the chance of live release when rolled into broader categories of male or female instead of the subcategories of intact and spayed/neutered.
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+Gender_Data <- Clean_ProjectData 
+Gender_Data$gender_category <- as.factor(ifelse(as.character(Gender_Data$sex_upon_intake) %in% c("Intact Male", "Neutered Male"), "Male",
+                                      ifelse(as.character(Gender_Data$sex_upon_intake) %in% c("Intact Female", "Spayed Female"), "Female",
+                                             "Unknown")))
+
+print(levels(Gender_Data$gender_category))
+Gender_Data$gender_category = relevel(Gender_Data$gender_category, ref = 3)
+
+Gender_Model <- glm(outcome_category ~ animal_type + intake_condition + intake_type + time_in_shelter_days + gender_category, data = Gender_Data, family = binomial())
+
+summary(Gender_Model)
+```
+
+Based on the residual deviance and the AIC score being slightly higher than those for the model with the further specified gender categories, this does not appear to improve the model.  In hindsight, this makes sense as models tend to become better with more predictors.
+
+##Time of Stay vs Outcome
+Time of stay is a numerical value so this can be evaluated with some additional plots and functions than the other variables.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Clean_ProjectData <- Clean_ProjectData %>% mutate(binary_live = ifelse(outcome_category == "Live Release", 1, 0))
+
+ggplot(data = Clean_ProjectData, aes(x = time_in_shelter_days, y = binary_live)) + 
+    geom_jitter(width = 0, height = .05, alpha = .5) +
+    geom_smooth(method = "glm", se = 0, method.args = list(family = "binomial")) +
+    labs(title = "Live Release for All Animals", x = "Days in Shelter", y = "Outcome (1 = Live Release)")
+```
+
+As demonstrated in the summary of the model for all animasls, the time in the shelter has a very small positive influence on the chance of live release.  Since we noted earlier that models for cats and dogs were better than all animals, below are the scatterplots for them respectively.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Cat_Data <- Cat_Data %>% mutate(binary_live = ifelse(outcome_category == "Live Release", 1, 0))
+
+ggplot(data = Cat_Data, aes(x = time_in_shelter_days, y = binary_live)) + 
+    geom_jitter(width = 0, height = .05, alpha = .5) +
+    geom_smooth(method = "glm", se = 0, method.args = list(family = "binomial")) +
+    labs(title = "Live Release for All Cats", x = "Days in Shelter", y = "Outcome (1 = Live Release)")
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Dog_Data <- Dog_Data %>% mutate(binary_live = ifelse(outcome_category == "Live Release", 1, 0))
+
+ggplot(data = Dog_Data, aes(x = time_in_shelter_days, y = binary_live)) + 
+    geom_jitter(width = 0, height = .05, alpha = .5) +
+    geom_smooth(method = "glm", se = 0, method.args = list(family = "binomial")) +
+    labs(title = "Live Release for Dogs", x = "Days in Shelter", y = "Outcome (1 = Live Release)")
+```
+
+Because they both are skewed heavily towards live release, I would conclude that the time of days in shelter has little impact on their live release rate. This makes sense because it is a no kill shelter.  A high volume open admission shelter would provide better data for a model that included this information.
+
+#Limitations and Room for Improvement
+Once I began the analysis, I realized the questions I was trying to answer were too broad to be able explore each one thoroughly.  Some things I would like to do if I were to look into this data further.
+
+1. I could remove observations categorized as public assist from the intake types and choose stray or owner surrender as the baseline to get more meaningful results.  Public assist is a vague categorization and in some shelters, animals could be categorized as strays even if the public assisted in their retrieval.
+2. For gender, these models are simply telling us that knowing the gender improves the accuracy of the model to predict live release.  If we remove observations with unknown as the gender and choose male or female as a baseline, we can compare to see if either has more favorable results than the other.
+3. If time allowed, I would remove the time in shelter from the models since in this environment, the effect on the live release was minimal and would not necessarily representative for all animals shelters.
+4. Furthermore, I don't think I would use this model to predict outcomes for shelters that are not also classified as "no-kill" because of atypical results revealed in this analysis like time of stay having a slight positive impact and strays having a favorable effect vs. owner surrender.
