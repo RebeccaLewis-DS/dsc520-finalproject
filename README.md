@@ -15,9 +15,17 @@ My goal was to use data from a Austin Animal Center Shelter Intakes and Outcomes
 -	Does the gender of the animal affect the outcome?
 -	As the length of the animals stay in the shelter increases, does the chance of live release decrease? Does the chance of euthanasia increase?
 
-
-
 ### Contents
+- R Script - Final_Project_LewisRebecca.R
+- Markdown Report - Final_Project_LewisRebecca_RMD.Rmd
+- Final Report PDF - LewisRebecca_FinalProject_Report.pdf
+- Data Files - data.zip
 
+### Requirements
+- Built using R version 3.6.1 in RStudio IDE
+- Libraries used include readr, ggplot2, lubridate, stringr, dplyr, broom, reshape2, tidyr
 
-### Installation and Usage.
+### Usage
+1. Download the files.
+2. Uzip the contents of data.zip into the same folder as the R script.
+3. Run using R editor.
